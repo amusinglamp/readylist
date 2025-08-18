@@ -1,0 +1,19 @@
+[project]
+name = "readylist"
+version = "0.1.0"
+description = "A state graph manipulation tool"
+readme = "README.md"
+requires-python = ">=3.13"
+license = {file = "LICENSE"}
+authors = [{name = "chris@sennit.io"}]
+dependencies = []
+
+[project.scripts]
+readylist = "readylist.cli:main"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
