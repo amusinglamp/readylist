@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = {file = "LICENSE"}
 authors = [{name = "chris@sennit.io"}]
-dependencies = []
+dependencies = ["pygraphviz"]
 
 [project.scripts]
 readylist = "readylist.cli:main"
