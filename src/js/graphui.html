@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SVG Graph with Checklists</title>
+<style>
+body {
+    font-family: Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: 0;
+    padding: 20px;
+}
+#svgWrapper {
+border: 1px solid #ccc;
+width: 800px;
+height: 600px;
+position: relative;
+overflow: auto;
+}
+#svgContainer {
+width: 800px;
+height: 600px;
+position: absolute;
+top: 0;
+left: 0;
+}
+#exportButton {
+margin-top: 20px;
+padding: 10px 20px;
+font-size: 16px;
+cursor: pointer;
+}
+#zoomControls {
+position: absolute;
+bottom: 10px;
+right: 10px; /* Adjusted to be inside the wrapper */
+display: flex;
+flex-direction: column;
+}
+#zoomControls button {
+margin: 5px 0;
+padding: 5px 10px;
+font-size: 16px;
+cursor: pointer;
+width: 30px;
+text-align: center;
+}
+#fadeOverlay {
+pointer-events: none;
+position: absolute;
+top: 0;
+left: 0;
+width: 100%;
+height: 100%;
+}
+</style>
+</head>
+<body>
+<div id="svgWrapper">
+<svg id="svgContainer" width="800" height="600">
+<defs>
+<linearGradient id="fadeTop" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="white" stop-opacity="0"/>
+<stop offset="100%" stop-color="white" stop-opacity="1"/>
+</linearGradient>
+<linearGradient id="fadeBottom" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="white" stop-opacity="1"/>
+<stop offset="100%" stop-color="white" stop-opacity="0"/>
+</linearGradient>
+<linearGradient id="fadeLeft" x1="0" y1="0" x2="1" y2="0">
+<stop offset="0%" stop-color="white" stop-opacity="0"/>
+<stop offset="100%" stop-color="white" stop-opacity="1"/>
+</linearGradient>
+<linearGradient id="fadeRight" x1="0" y1="0" x2="1" y2="0">
+<stop offset="0%" stop-color="white" stop-opacity="1"/>
+<stop offset="100%" stop-color="white" stop-opacity="0"/>
+</linearGradient>
+<mask id="fadeMask">
+<rect x="0" y="0" width="800" height="15" fill="url(#fadeTop)"/>
+<rect x="0" y="585" width="800" height="15" fill="url(#fadeBottom)"/>
+<rect x="0" y="15" width="15" height="570" fill="url(#fadeLeft)"/>
+<rect x="785" y="15" width="15" height="570" fill="url(#fadeRight)"/>
+</mask>
+</defs>
+<g id="contentGroup"></g>
+<rect id="fadeOverlay" width="800" height="600" fill="white" mask="url(#fadeMask)" />
+</svg>
+</div>
+<div id="zoomControls">
+<button id="zoomIn">+</button>
+<button id="zoomOut">−</button>
+</div>
+<button id="exportButton">Export as JSON</button>
+
+<script>
+const svgNS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById('svgContainer');
+const contentGroup = document.getElementById('contentGroup');
+const svgWrapper = document.getElementById('svgWrapper');
+const zoomControls = document.getElementById('zoomControls');
+let nodes = [];
+let edges = [];
+let currentNode = null;
+let currentChecklistItem = null;
+let isEditingChecklist = false;
+const checklistOffset = 80;
+const checklistItemHeight = 20;
+const maxTextWidth = 150; // Max width for text wrapping
+let zoomLevel = 1;
+const zoomStep = 0.1;
+const siblingSpacing = 100;
+const verticalSpacing = 150;
+
+// Initialize the graph with one node and checklist
+function initGraph() {
+    const initialNode = createNode(400, 100, "New Node");
+    nodes.push(initialNode);
+    currentNode = initialNode;
+    selectNode(initialNode);
+    layoutTree();
+    updatePositions();
+}
+
+// Create an SVG node (ellipse)
+function createNode(x, y, label = "") {
+    const group = document.createElementNS(svgNS, "g");
+    const ellipse = document.createElementNS(svgNS, "ellipse");
+    const textGroup = document.createElementNS(svgNS, "g"); // For multi-line text
+    const checklistGroup = document.createElementNS(svgNS, "g");
+
+    ellipse.setAttribute("rx", 40);
+    ellipse.setAttribute("ry", 20);
+    ellipse.setAttribute("fill", "lightblue");
+    ellipse.setAttribute("stroke", "black");
+    ellipse.setAttribute("stroke-width", 2);
+
+    group.appendChild(ellipse);
+    group.appendChild(textGroup);
+    group.appendChild(checklistGroup);
+
+    contentGroup.appendChild(group);
+
+    const node = {
+        group,
+        ellipse,
+        textGroup,
+        checklistGroup,
+        checklistItems: [],
+        x,
+        y,
+        id: `node-${nodes.length + 1}`,
+        label: label || "New Node",
+        parent: null,
+        children: []
+    };
+    updateNodeText(node);
+    // Add click handler for node
+    ellipse.addEventListener("click", () => {
+        selectNode(node);
+        centerGraphOnNode(node);
+    });
+    return node;
+}
+
+// Update node text with wrapping
+function updateNodeText(node) {
+    node.textGroup.innerHTML = '';
+    const lines = wrapText(node.label, maxTextWidth);
+    lines.forEach((line, index) => {
+        const tspan = document.createElementNS(svgNS, "text");
+        tspan.setAttribute("text-anchor", "middle");
+        tspan.setAttribute("dominant-baseline", "central");
+        tspan.setAttribute("fill", "black");
+        tspan.setAttribute("y", (index - (lines.length - 1) / 2) * 15); // Line height 15px
+        tspan.textContent = line;
+        node.textGroup.appendChild(tspan);
+    });
+}
+
+// Create a checklist item
+function createChecklistItem(node, label = "") {
+    const itemGroup = document.createElementNS(svgNS, "g");
+    const checkbox = document.createElementNS(svgNS, "rect");
+    const textGroup = document.createElementNS(svgNS, "g"); // For multi-line text
+
+    checkbox.setAttribute("width", 12);
+    checkbox.setAttribute("height", 12);
+    checkbox.setAttribute("fill", "white");
+    checkbox.setAttribute("stroke", "black");
+    checkbox.setAttribute("stroke-width", 1);
+
+    itemGroup.appendChild(checkbox);
+    itemGroup.appendChild(textGroup);
+
+    node.checklistGroup.appendChild(itemGroup);
+
+    const item = { group: itemGroup, checkbox, textGroup, label: label || "New Item" };
+    updateChecklistItemText(item);
+    // Add click handler for checklist item
+    itemGroup.addEventListener("click", () => {
+        selectNode(node);
+        isEditingChecklist = true;
+        currentChecklistItem = item;
+    });
+    node.checklistItems.push(item);
+    return item;
+}
+
+// Update checklist item text with wrapping
+function updateChecklistItemText(item) {
+    item.textGroup.innerHTML = '';
+    const lines = wrapText(item.label, maxTextWidth);
+    lines.forEach((line, index) => {
+        const tspan = document.createElementNS(svgNS, "text");
+        tspan.setAttribute("x", 20);
+        tspan.setAttribute("text-anchor", "start");
+        tspan.setAttribute("dominant-baseline", "central");
+        tspan.setAttribute("fill", "black");
+        tspan.setAttribute("y", (index * 15)); // Line height 15px
+        tspan.textContent = line;
+        item.textGroup.appendChild(tspan);
+    });
+}
+
+// Wrap text to max width
+function wrapText(text, maxWidth) {
+    const words = text.replace(/\n/g, ' \n ').split(' ');
+    const lines = [];
+    let currentLine = '';
+    const tempText = document.createElementNS(svgNS, "text");
+    contentGroup.appendChild(tempText); // Temporary for measurement
+
+    words.forEach(word => {
+        if (word === '\n') {
+            if (currentLine) lines.push(currentLine);
+            currentLine = '';
+            return;
+        }
+        const testLine = currentLine + (currentLine ? ' ' : '') + word;
+        tempText.textContent = testLine;
+        if (tempText.getBBox().width > maxWidth) {
+            if (currentLine) lines.push(currentLine);
+            currentLine = word;
+        } else {
+            currentLine = testLine;
+        }
+    });
+    if (currentLine) lines.push(currentLine);
+    contentGroup.removeChild(tempText);
+    return lines;
+}
+
+// Update node size based on text content
+function updateNodeSize(node) {
+    const bbox = node.textGroup.getBBox();
+    const padding = 10;
+    node.ellipse.setAttribute("rx", Math.max(40, bbox.width / 2 + padding));
+    node.ellipse.setAttribute("ry", Math.max(20, (bbox.height + 10) / 2 + padding)); // Extra for multi-line
+    node.textGroup.setAttribute("transform", `translate(0, 0)`); // Centered, tspans handle positioning
+}
+
+// Layout the tree to spread out nodes
+function layoutTree() {
+    const root = nodes.find(n => !n.parent);
+    if (!root) return;
+
+    // Update sizes first
+    nodes.forEach(node => {
+        updateNodeText(node);
+        updateNodeSize(node);
+    });
+
+    function computeSize(node) {
+        const nodeWidth = node.ellipse.getAttribute("rx") * 2;
+        const nodeHeight = node.ellipse.getAttribute("ry") * 2;
+
+        if (!node.children.length) {
+            node.size = { width: nodeWidth, height: nodeHeight };
+            return node.size;
+        }
+
+        let totalChildWidth = 0;
+        let maxChildHeight = 0;
+
+        node.children.forEach(childId => {
+            const child = nodes.find(n => n.id === childId);
+            const size = computeSize(child);
+            totalChildWidth += size.width;
+            maxChildHeight = Math.max(maxChildHeight, size.height);
+        });
+
+        totalChildWidth += (node.children.length - 1) * siblingSpacing;
+        const width = Math.max(nodeWidth, totalChildWidth);
+        const height = nodeHeight + verticalSpacing + maxChildHeight;
+
+        node.size = { width, height };
+        return node.size;
+    }
+
+    computeSize(root);
+
+    function assignPositions(node, x, y) {
+        node.x = x;
+        node.y = y;
+
+        if (node.children.length) {
+            let totalWidth = 0;
+            node.children.forEach(childId => {
+                const child = nodes.find(n => n.id === childId);
+                totalWidth += child.size.width;
+            });
+            totalWidth += (node.children.length - 1) * siblingSpacing;
+
+            let currentX = x - totalWidth / 2;
+
+            node.children.forEach(childId => {
+                const child = nodes.find(n => n.id === childId);
+                currentX += child.size.width / 2;
+                assignPositions(child, currentX, y + verticalSpacing);
+                currentX += child.size.width / 2 + siblingSpacing;
+            });
+        }
+    }
+
+    assignPositions(root, 400, 100);
+}
+
+// Update positions of nodes, edges, and checklists
+function updatePositions() {
+    nodes.forEach(node => {
+        updateNodeSize(node);
+        node.group.setAttribute("transform", `translate(${node.x}, ${node.y})`);
+        node.checklistGroup.setAttribute("transform", `translate(${node.ellipse.getAttribute("rx") + checklistOffset}, 0)`);
+        let currentY = 0;
+        node.checklistItems.forEach((item, index) => {
+            const itemBBox = item.textGroup.getBBox();
+            const itemHeight = Math.max(checklistItemHeight, itemBBox.height + 15); // Increased padding for better spacing
+            item.group.setAttribute("transform", `translate(0, ${currentY})`); // Removed variable offset to prevent shifting
+            item.checkbox.setAttribute("y", -6);
+            currentY += itemHeight;
+        });
+    });
+
+    edges.forEach(edge => {
+        const fromNode = nodes.find(n => n.id === edge.from);
+        const toNode = nodes.find(n => n.id === edge.to);
+        if (fromNode && toNode) {
+            edge.line.setAttribute("x1", fromNode.x);
+            edge.line.setAttribute("y1", fromNode.y);
+            edge.line.setAttribute("x2", toNode.x);
+            edge.line.setAttribute("y2", toNode.y);
+        }
+    });
+}
+
+// Center the graph on the selected node
+function centerGraphOnNode(node) {
+    const wrapperRect = svgWrapper.getBoundingClientRect();
+    const centerX = wrapperRect.width / 2;
+    const centerY = wrapperRect.height * 0.75; // 75% height
+    const offsetX = centerX / zoomLevel - node.x;
+    const offsetY = centerY / zoomLevel - node.y;
+    nodes.forEach(n => {
+        n.x += offsetX;
+        n.y += offsetY;
+    });
+    updatePositions();
+}
+
+// Select a node and show its checklist
+function selectNode(node) {
+    nodes.forEach(n => {
+        n.group.setAttribute("opacity", n === node ? "1" : "0.5");
+        n.ellipse.setAttribute("fill", n === node ? "lightgreen" : "lightblue");
+        n.checklistGroup.setAttribute("visibility", n === node ? "visible" : "hidden");
+    });
+    edges.forEach(edge => {
+        edge.line.setAttribute("opacity", "0.5");
+    });
+    currentNode = node;
+    currentChecklistItem = null;
+    isEditingChecklist = false;
+}
+
+// Handle keyboard input
+document.addEventListener("keydown", (event) => {
+    if (!currentNode) return;
+
+    if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        if (!isEditingChecklist) {
+            isEditingChecklist = true;
+            if (currentNode.checklistItems.length === 0) {
+                currentChecklistItem = createChecklistItem(currentNode, "");
+            } else {
+                currentChecklistItem = currentNode.checklistItems[currentNode.checklistItems.length - 1];
+            }
+        } else if (currentChecklistItem) {
+            currentChecklistItem = createChecklistItem(currentNode, "");
+        }
+        updatePositions();
+    } else if (event.key === "Tab") {
+        event.preventDefault();
+        if (isEditingChecklist) {
+            isEditingChecklist = false;
+            currentChecklistItem = null;
+            selectNode(currentNode);
+        } else {
+            const newNode = createNode(currentNode.x, currentNode.y + verticalSpacing, "New Node");
+            newNode.parent = currentNode.id;
+            currentNode.children.push(newNode.id);
+            nodes.push(newNode);
+            const edge = {
+                from: currentNode.id,
+                to: newNode.id,
+                line: document.createElementNS(svgNS, "line")
+            };
+            edge.line.setAttribute("stroke", "black");
+            edge.line.setAttribute("stroke-width", 2);
+            contentGroup.insertBefore(edge.line, nodes[0].group);
+            edges.push(edge);
+            layoutTree();
+            selectNode(newNode);
+            centerGraphOnNode(newNode);
+        }
+    } else if (event.key === "ArrowUp") {
+        if (currentNode.parent) {
+            const parent = nodes.find(n => n.id === currentNode.parent);
+            selectNode(parent);
+            centerGraphOnNode(parent);
+        }
+    } else if (event.key === "ArrowDown") {
+        if (currentNode.children.length > 0) {
+            const child = nodes.find(n => n.id === currentNode.children[0]);
+            selectNode(child);
+            centerGraphOnNode(child);
+        }
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        if (currentNode.parent) {
+            const parent = nodes.find(n => n.id === currentNode.parent);
+            const sibIndex = parent.children.indexOf(currentNode.id);
+            let newSibIndex = sibIndex;
+            if (event.key === "ArrowLeft" && sibIndex > 0) {
+                newSibIndex = sibIndex - 1;
+            } else if (event.key === "ArrowRight" && sibIndex < parent.children.length - 1) {
+                newSibIndex = sibIndex + 1;
+            }
+            if (newSibIndex !== sibIndex) {
+                const sibling = nodes.find(n => n.id === parent.children[newSibIndex]);
+                selectNode(sibling);
+                centerGraphOnNode(sibling);
+            }
+        }
+    } else if (event.key === "Backspace") {
+        event.preventDefault();
+        let target = isEditingChecklist ? currentChecklistItem : currentNode;
+        target.label = target.label.slice(0, -1);
+        if (isEditingChecklist) {
+            updateChecklistItemText(target);
+        } else {
+            updateNodeText(target);
+        }
+        updatePositions();
+    } else if (event.key === "Delete") {
+        if (isEditingChecklist) {
+            if (currentChecklistItem && currentChecklistItem.label === "New Item") {
+                const idx = currentNode.checklistItems.indexOf(currentChecklistItem);
+                if (idx > -1) {
+                    currentNode.checklistItems.splice(idx, 1);
+                    currentNode.checklistGroup.removeChild(currentChecklistItem.group);
+                }
+                currentChecklistItem = null;
+                isEditingChecklist = false;
+                updatePositions();
+            }
+        } else {
+            if (currentNode.label === "New Node" &&
+                currentNode.checklistItems.every(item => item.label === "New Item") &&
+                currentNode.children.length === 0) {
+                // Remove connected edges
+                const removedEdges = edges.filter(e => e.from === currentNode.id || e.to === currentNode.id);
+            removedEdges.forEach(e => contentGroup.removeChild(e.line));
+            edges = edges.filter(e => e.from !== currentNode.id && e.to !== currentNode.id);
+            // Remove from parent's children
+            if (currentNode.parent) {
+                const parent = nodes.find(n => n.id === currentNode.parent);
+                parent.children = parent.children.filter(c => c !== currentNode.id);
+            }
+            // Remove node
+            nodes = nodes.filter(n => n !== currentNode);
+            contentGroup.removeChild(currentNode.group);
+            // Select parent or root
+            currentNode = currentNode.parent ? nodes.find(n => n.id === currentNode.parent) : (nodes[0] || null);
+            if (currentNode) {
+                selectNode(currentNode);
+                layoutTree();
+                updatePositions();
+                centerGraphOnNode(currentNode);
+            } else {
+                initGraph(); // Reset if no nodes left
+            }
+                }
+        }
+    }
+});
+
+// Handle text input
+document.addEventListener("keypress", (event) => {
+    if (event.key === "Enter") return;
+    if (!currentNode) return;
+
+    let target = isEditingChecklist ? currentChecklistItem : currentNode;
+    // Clear default text on first keypress
+    if (target.label === "New Node" || target.label === "New Item") {
+        target.label = "";
+    }
+    // Add newline for Shift+Enter, otherwise append character
+    target.label += event.shiftKey && event.key === "Enter" ? "\n" : event.key;
+    if (isEditingChecklist) {
+        updateChecklistItemText(target);
+    } else {
+        updateNodeText(target);
+    }
+    updatePositions();
+});
+
+// Export graph as JSON
+document.getElementById("exportButton").addEventListener("click", () => {
+    console.log("Exporting graph data..."); // For debugging
+    const graphData = {
+        nodes: nodes.map(node => ({
+            id: node.id,
+            label: node.label,
+            x: node.x,
+            y: node.y,
+            checklist: node.checklistItems.map(item => item.label)
+        })),
+        edges: edges.map(edge => ({
+            from: edge.from,
+            to: edge.to
+        }))
+    };
+    const blob = new Blob([JSON.stringify(graphData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "graph.json";
+    a.click();
+    URL.revokeObjectURL(url);
+});
+
+// Zoom functionality
+function applyZoom() {
+    contentGroup.setAttribute("transform", `scale(${zoomLevel})`);
+    svg.setAttribute("width", 800 * zoomLevel);
+    svg.setAttribute("height", 600 * zoomLevel);
+}
+
+document.getElementById("zoomIn").addEventListener("click", () => {
+    zoomLevel += zoomStep;
+    applyZoom();
+});
+
+document.getElementById("zoomOut").addEventListener("click", () => {
+    zoomLevel = Math.max(zoomStep, zoomLevel - zoomStep);
+    applyZoom();
+});
+
+// Start the graph
+initGraph();
+</script>
+</body>
+</html>
